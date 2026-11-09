@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="de" class="h-full bg-[#0f0f0f] text-gray-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EliTube & EliClipz</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Font Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f0f0f;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        .reel-container {
+            scroll-snap-type: y mandatory;
+        }
+        .reel-item {
+            scroll-snap-align: start;
+        }
+        /* Gradient Bar from Bild 4 */
+        .progress-gradient-bar {
+            background: linear-gradient(90deg, #ff0000 0%, #8000ff 50%, #0000ff 100%);
+        }
+        .player-gradient-overlay {
+            background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.4) 50%, rgba(0,0,0,0) 100%);
+        }
+        /* Fullscreen Support Overlay */
+        :fullscreen #custom-player-container,
+        :-webkit-full-screen #custom-player-container {
+            width: 100vw !important;
+            height: 100vh !important;
+            border-radius: 0 !important;
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col bg-[#0f0f0f] text-gray-100 overflow-hidden">
+
+    <!-- APP CONTAINER -->
+    <div id="app" class="h-full flex flex-col"></div>
+
+    <!-- NOTIFICATION TOAST -->
+    <div id="toast" class="fixed bottom-6 right-6 bg-zinc-800 border border-zinc-700 text-white px-5 py-3 rounded-xl shadow-2xl transition-all duration-300 transform translate-y-20 opacity-0 z-50 flex items-center space-x-3 pointer-events-none">
+        <i id="toast-icon" class="fas fa-check-circle text-green-400 text-lg"></i>
+        <span id="toast-msg" class="font-medium text-sm"></span>
+    </div>
+
+    <!-- MAIN JAVASCRIPT APP LOGIC -->
+    <script>
+        // Initial Empty Video List
+        const INITIAL_VIDEOS = [];
+
+        // System Default User
+        const SYSTEM_USERS = [
+            {
+                username: 'Test Benutzer',
+                handle: 'Test',
+                email: 'test@example.com',
+                password: 'uni123versal',
+                avatar: 'https://api.dicebear.com/7.x/bottts/svg?seed=Test',
+                banner: '',
+                bio: 'Willkommen auf meinem offiziellen Test-Kanal!'
+            }
+        ];
+
+        // MARKDOWN FORMATTER (*kursiv*, **fett**)
+        function parseMarkdown(text) {
+            if (!text) return '';
+            let parsed = text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+            // Bold **text**
+            parsed = parsed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            // Italic *text*
+            parsed = parsed.replace(/\*(.*?)\*/g, '<em>$1</em>');
+            return parsed;
+        }
+
+        // STORE MANAGEMENT
+        class Store {
+            constructor() {
+                this.loadState();
+            }
+
+            loadState() {
+                const storedUsers = localStorage.getItem('elitube_users');
+                this.users = storedUsers ? JSON.parse(storedUsers) : SYSTEM_USERS;
+
+                const currentUser = localStorage.getItem('elitube_current_user');
+                this.currentUser = currentUser ? JSON.parse(currentUser) : null;
+
+                const storedVideos = localStorage.getItem('elitube_videos');
+                this.videos = storedVideos ? JSON.parse(storedVideos) : INITIAL_VIDEOS;
+
+                const storedCounter = localStorage.getItem('elitube_video_counter');
+                this.videoCounter = storedCounter ? parseInt(storedCounter, 10) : 1;
+
+                const storedInteractions = localStorage.getItem('elitube_user_interactions');
+                this.interactions = storedInteractions ? JSON.parse(storedInteractions) : {
+                    likedVideos: [],
+                    dislikedVideos: [],
+                    subscriptions: [],
+                    bells: {}
+                };
+
+                this.currentTab = 'home';
+                this.activeVideoId = null;
+                this.searchQuery = '';
+            }
+
+            saveState() {
+                localStorage.setItem('elitube_users', JSON.stringify(this.users));
+                localStorage.setItem('elitube_current_user', JSON.stringify(this.currentUser));
+                localStorage.setItem('elitube_videos', JSON.stringify(this.videos));
+                localStorage.setItem('elitube_video_counter', this.videoCounter.toString());
+                localStorage.setItem('elitube_user_interactions', JSON.stringify(this.interactions));
+            }
+
+            registerUser(name, handle, email, password, avatarUrl) {
+                const exists = this.users.some(u => u.handle.toLowerCase() === handle.toLowerCase());
+                if (exists) return { success: false, msg: `Der @Name "@${handle}" ist bereits vergeben!` };
+
+                const newUser = {
+                    username: name,
+                    handle: handle,
+                    email: email,
+                    password: password,
+                    avatar: avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(handle)}`,
+                    banner: '',
+                    bio: ''
+                };
+
+                this.users.push(newUser);
+                this.currentUser = newUser;
+                this.saveState();
+                this.downloadProfileFile(newUser);
+
+                return { success: true };
+            }
+
+            updateProfile(data) {
+                if (!this.currentUser) return;
+                
+                if (data.handle.toLowerCase() !== this.currentUser.handle.toLowerCase()) {
+                    const exists = this.users.some(u => u.handle.toLowerCase() === data.handle.toLowerCase());
+                    if (exists) return { success: false, msg: `Der @Name "@${data.handle}" ist bereits vergeben!` };
+                }
+
+                this.currentUser.username = data.username;
+                this.currentUser.handle = data.handle;
+                if (data.avatar) this.currentUser.avatar = data.avatar;
+                if (data.banner !== undefined) this.currentUser.banner = data.banner;
+                this.currentUser.bio = data.bio;
+
+                const idx = this.users.findIndex(u => u.email === this.currentUser.email);
+                if (idx !== -1) this.users[idx] = this.currentUser;
+
+                this.saveState();
+                this.downloadProfileFile(this.currentUser);
+                return { success: true };
+            }
+
+            downloadProfileFile(user) {
+                const profileContent = `Username: ${user.username}\n@Handle: ${user.handle}\nEmail: ${user.email}\nBio: ${user.bio || 'Keine'}\nSavePath: /profile/${user.handle}.txt`;
+                const blob = new Blob([profileContent], { type: 'text/plain' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `${user.handle}_profile.txt`;
+                showToast(`Profil-Daten in /profile/${user.handle}.txt indiziert! 📂`);
+            }
+
+            loginUser(identifier, password) {
+                const user = this.users.find(u => 
+                    (u.handle.toLowerCase() === identifier.toLowerCase() || u.email.toLowerCase() === identifier.toLowerCase()) && 
+                    u.password === password
+                );
+
+                if (user) {
+                    this.currentUser = user;
+                    this.saveState();
+                    return { success: true };
+                }
+                return { success: false, msg: 'Ungültiger @Name/E-Mail oder falsches Passwort!' };
+            }
+
+            logout() {
+                this.currentUser = null;
+                localStorage.removeItem('elitube_current_user');
+                this.currentTab = 'home';
+                renderApp();
+            }
+
+            toggleLike(videoId) {
+                const isLiked = this.interactions.likedVideos.includes(videoId);
+                const video = this.videos.find(v => v.id === videoId);
+
+                if (isLiked) {
+                    this.interactions.likedVideos = this.interactions.likedVideos.filter(id => id !== videoId);
+                    if (video) video.likes--;
+                } else {
+                    this.interactions.likedVideos.push(videoId);
+                    if (video) video.likes++;
+
+                    if (this.interactions.dislikedVideos.includes(videoId)) {
+                        this.interactions.dislikedVideos = this.interactions.dislikedVideos.filter(id => id !== videoId);
+                        if (video) video.dislikes--;
+                    }
+                }
+                this.saveState();
+                renderApp();
+            }
+
+            toggleDislike(videoId) {
+                const isDisliked = this.interactions.dislikedVideos.includes(videoId);
+                const video = this.videos.find(v => v.id === videoId);
+
+                if (isDisliked) {
+                    this.interactions.dislikedVideos = this.interactions.dislikedVideos.filter(id => id !== videoId);
+                    if (video) video.dislikes--;
+                } else {
+                    this.interactions.dislikedVideos.push(videoId);
+                    if (video) video.dislikes++;
+
+                    if (this.interactions.likedVideos.includes(videoId)) {
+                        this.interactions.likedVideos = this.interactions.likedVideos.filter(id => id !== videoId);
+                        if (video) video.likes--;
+                    }
+                }
+                this.saveState();
+                renderApp();
+            }
+
+            toggleSub(authorHandle) {
+                const isSubbed = this.interactions.subscriptions.includes(authorHandle);
+                if (isSubbed) {
+                    this.interactions.subscriptions = this.interactions.subscriptions.filter(h => h !== authorHandle);
+                    delete this.interactions.bells[authorHandle];
+                    showToast(`Abonnement für @${authorHandle} beendet`);
+                } else {
+                    this.interactions.subscriptions.push(authorHandle);
+                    this.interactions.bells[authorHandle] = 'all';
+                    showToast(`@${authorHandle} abonniert! 🎉`);
+                }
+                this.saveState();
+                renderApp();
+            }
+
+            cycleBell(authorHandle) {
+                if (!this.interactions.subscriptions.includes(authorHandle)) return;
+                const states = ['all', 'personalized', 'none'];
+                const current = this.interactions.bells[authorHandle] || 'all';
+                const nextIndex = (states.indexOf(current) + 1) % states.length;
+                const nextState = states[nextIndex];
+
+                this.interactions.bells[authorHandle] = nextState;
+                this.saveState();
+
+                const labelMap = { all: 'Alle Benachrichtigungen', personalized: 'Personalisierte Benachrichtigungen', none: 'Keine Benachrichtigungen' };
+                showToast(`${labelMap[nextState]} für @${authorHandle}`);
+                renderApp();
+            }
+
+            addComment(videoId, commentText) {
+                if (!commentText.trim()) return;
+                const video = this.videos.find(v => v.id === videoId);
+                if (video) {
+                    video.comments.unshift({
+                        id: 'comm-' + Date.now(),
+                        author: this.currentUser.username,
+                        handle: this.currentUser.handle,
+                        text: commentText.trim(),
+                        date: 'Gerade eben'
+                    });
+                    this.saveState();
+                    renderApp();
+                }
+            }
+
+            addVideo(videoData) {
+                const formattedId = String(this.videoCounter).padStart(3, '0');
+                this.videoCounter++;
+
+                const videoPath = `/EliVideos/${formattedId}.mp4`;
+                const thumbPath = `/EliVideos/Thumbnail/${formattedId}.jpg`;
+                const titleTxtPath = `/EliVideos/Titel/${formattedId}.txt`;
+                const nowStamp = new Date().toLocaleString('de-DE');
+
+                // Content formatted strictly:
+                // %Titel%
+                // %Beschreibung%
+                // %Uploadzeit und datum%
+                const txtContent = `${videoData.title}\n${videoData.description || 'Keine Beschreibung'}\n${nowStamp}`;
+
+                const newVid = {
+                    id: formattedId,
+                    title: videoData.title,
+                    description: videoData.description,
+                    url: videoData.url,
+                    thumbnail: videoData.thumbnail || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80',
+                    author: this.currentUser.username,
+                    authorHandle: this.currentUser.handle,
+                    authorAvatar: this.currentUser.avatar,
+                    views: 1,
+                    createdAt: nowStamp,
+                    likes: 0,
+                    dislikes: 0,
+                    isShort: videoData.isShort,
+                    comments: [],
+                    filePaths: {
+                        video: videoPath,
+                        thumbnail: thumbPath,
+                        titleTxt: titleTxtPath
+                    }
+                };
+
+                // Trigger TXT File Download for local /EliVideos/Titel/
+                const blob = new Blob([txtContent], { type: 'text/plain' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `${formattedId}.txt`;
+                a.click();
+
+                this.videos.unshift(newVid);
+                this.saveState();
+
+                if (videoData.isShort) {
+                    this.currentTab = 'clipz';
+                } else {
+                    this.currentTab = 'home';
+                }
+                showToast(`Video in ${videoPath} & Titel-TXT in ${titleTxtPath} gespeichert! 📁`);
+                renderApp();
+            }
+        }
+
+        const store = new Store();
+
+        // UTILS
+        function formatTime(seconds) {
+            if (isNaN(seconds)) return "0:00";
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) {
+                return `${h}:${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+            }
+            return `${m}:${s < 10 ? '0' : ''}${s}`;
+        }
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            const msgEl = document.getElementById('toast-msg');
+            const iconEl = document.getElementById('toast-icon');
+
+            if (!toast || !msgEl || !iconEl) return;
+            msgEl.textContent = message;
+            toast.className = `fixed bottom-6 right-6 px-5 py-3 rounded-xl shadow-2xl transition-all duration-300 transform translate-y-0 opacity-100 z-50 flex items-center space-x-3 pointer-events-auto ${isError ? 'bg-red-600 border-red-500' : 'bg-zinc-800 border border-zinc-700 text-white'}`;
+            iconEl.className = isError ? 'fas fa-exclamation-circle text-red-300 text-lg' : 'fas fa-check-circle text-green-400 text-lg';
+
+            setTimeout(() => {
+                toast.className = toast.className.replace('translate-y-0 opacity-100', 'translate-y-20 opacity-0 pointer-events-none');
+            }, 3500);
+        }
+
+        function copyShareLink(videoId) {
+            const dummyUrl = window.location.origin + window.location.pathname + `?v=${videoId}`;
+            navigator.clipboard.writeText(dummyUrl).then(() => {
+                showToast('Video-Link in Zwischenablage kopiert! 🔗');
+            }).catch(() => {
+                showToast('Link kopiert!');
+            });
+        }
+
+        function navigateTo(tab, videoId = null) {
+            store.currentTab = tab;
+            if (videoId) store.activeVideoId = videoId;
+            renderApp();
+        }
+
+        function handleSearch(val) {
+            store.searchQuery = val;
+            renderApp();
+        }
+
+        let isCaptchaVerified = false;
+
+        function togglePasswordVisibility(fieldId, iconId) {
+            const field = document.getElementById(fieldId);
+            const icon = document.getElementById(iconId);
+            if (!field || !icon) return;
+            if (field.type === 'password') {
+                field.type = 'text';
+                icon.className = 'fas fa-eye-slash';
+            } else {
+                field.type = 'password';
+                icon.className = 'fas fa-eye';
+            }
+        }
+
+        // AUTHENTICATION VIEW
+        function renderAuthView(isRegister = false) {
+            isCaptchaVerified = false;
+            return `
+                <div class="min-h-screen w-full flex items-center justify-center bg-[#0f0f0f] px-4 py-8 relative">
+                    <div class="absolute w-96 h-96 bg-red-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+                    <div class="w-full max-w-md bg-[#1f1f1f] border border-zinc-800 rounded-2xl p-6 sm:p-8 shadow-2xl z-10 relative">
+                        <div class="text-center mb-8">
+                            <div class="inline-flex items-center space-x-2">
+                                <div class="bg-red-600 text-white p-2 rounded-xl text-2xl font-bold flex items-center justify-center w-12 h-10 shadow-lg shadow-red-600/30">
+                                    <i class="fas fa-play"></i>
+                                </div>
+                                <span class="text-2xl font-extrabold tracking-tight text-white">Eli<span class="text-red-600">Tube</span></span>
+                            </div>
+                            <p class="text-xs text-zinc-400 mt-2">Melde dich an, um Videos, EliClipz und Kommentare zu sehen.</p>
+                        </div>
+
+                        <div class="flex bg-[#0f0f0f] p-1 rounded-xl mb-6">
+                            <button onclick="switchAuthTab(false)" class="flex-1 py-2 text-sm font-semibold rounded-lg transition ${!isRegister ? 'bg-[#2a2a2a] text-white shadow' : 'text-zinc-400 hover:text-white'}">
+                                Anmelden
+                            </button>
+                            <button onclick="switchAuthTab(true)" class="flex-1 py-2 text-sm font-semibold rounded-lg transition ${isRegister ? 'bg-[#2a2a2a] text-white shadow' : 'text-zinc-400 hover:text-white'}">
+                                Registrieren
+                            </button>
+                        </div>
+
+                        ${isRegister ? `
+                            <form onsubmit="handleRegister(event)" class="space-y-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Benutzername</label>
+                                    <input type="text" id="reg-name" required placeholder="z.B. Alex Schmidt" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">@Name (Eindeutiger Tag)</label>
+                                    <div class="relative">
+                                        <span class="absolute left-4 top-2.5 text-zinc-500 text-sm">@</span>
+                                        <input type="text" id="reg-handle" required placeholder="alex_s" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl pl-8 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">E-Mail</label>
+                                    <input type="email" id="reg-email" required placeholder="alex@example.com" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Profilbild (Optional, 1:1 format)</label>
+                                    <input type="file" id="reg-avatar-file" accept="image/*" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2 text-xs text-zinc-300 file:mr-4 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-zinc-800 file:text-white cursor-pointer">
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-semibold text-zinc-400 mb-1">Passwort</label>
+                                        <div class="relative">
+                                            <input type="password" id="reg-pass1" required placeholder="••••••••" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl pl-4 pr-10 py-2.5 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                            <button type="button" onclick="togglePasswordVisibility('reg-pass1', 'reg-pass1-icon')" class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white text-xs">
+                                                <i id="reg-pass1-icon" class="fas fa-eye"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-semibold text-zinc-400 mb-1">Wiederholen</label>
+                                        <div class="relative">
+                                            <input type="password" id="reg-pass2" required placeholder="••••••••" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl pl-4 pr-10 py-2.5 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                            <button type="button" onclick="togglePasswordVisibility('reg-pass2', 'reg-pass2-icon')" class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white text-xs">
+                                                <i id="reg-pass2-icon" class="fas fa-eye"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="bg-[#0f0f0f] border border-zinc-800 rounded-xl p-3 flex items-center justify-between mt-2">
+                                    <label class="flex items-center space-x-3 cursor-pointer">
+                                        <input type="checkbox" id="captcha-check" onchange="isCaptchaVerified = this.checked" class="w-5 h-5 rounded border-zinc-700 bg-zinc-900 text-red-600 focus:ring-0 cursor-pointer">
+                                        <span class="text-xs text-zinc-300 font-medium">Ich bin kein Roboter</span>
+                                    </label>
+                                    <div class="flex flex-col items-center">
+                                        <i class="fas fa-shield-alt text-red-500 text-lg"></i>
+                                        <span class="text-[9px] text-zinc-500">reCAPTCHA Fake</span>
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-xl shadow-lg shadow-red-600/30 transition duration-200 mt-2">
+                                    Konto erstellen
+                                </button>
+                            </form>
+                        ` : `
+                            <form onsubmit="handleLogin(event)" class="space-y-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">@Name ODER E-Mail</label>
+                                    <input type="text" id="login-id" required placeholder="Test ODER test@example.com" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Passwort</label>
+                                    <div class="relative">
+                                        <input type="password" id="login-pass" required placeholder="uni123versal" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl pl-4 pr-10 py-3 text-sm text-white focus:outline-none focus:border-red-600 transition">
+                                        <button type="button" onclick="togglePasswordVisibility('login-pass', 'login-pass-icon')" class="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white text-sm">
+                                            <i id="login-pass-icon" class="fas fa-eye"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="bg-[#0f0f0f] border border-zinc-800 rounded-xl p-3 flex items-center justify-between mt-2">
+                                    <label class="flex items-center space-x-3 cursor-pointer">
+                                        <input type="checkbox" id="captcha-check" onchange="isCaptchaVerified = this.checked" class="w-5 h-5 rounded border-zinc-700 bg-zinc-900 text-red-600 focus:ring-0 cursor-pointer">
+                                        <span class="text-xs text-zinc-300 font-medium">Ich bin kein Roboter</span>
+                                    </label>
+                                    <div class="flex flex-col items-center">
+                                        <i class="fas fa-shield-alt text-red-500 text-lg"></i>
+                                        <span class="text-[9px] text-zinc-500">reCAPTCHA Fake</span>
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-xl shadow-lg shadow-red-600/30 transition duration-200 mt-2">
+                                    Anmelden
+                                </button>
+                            </form>
+
+                            <div class="mt-6 bg-[#0f0f0f] p-3 rounded-xl border border-zinc-800/80 text-xs text-zinc-400">
+                                <span class="font-bold text-red-500">Test-Zugang:</span><br>
+                                @Name: <code class="text-white bg-zinc-800 px-1 py-0.5 rounded">Test</code> | Passwort: <code class="text-white bg-zinc-800 px-1 py-0.5 rounded">uni123versal</code>
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+        }
+
+        let isAuthRegisterMode = false;
+        function switchAuthTab(toRegister) {
+            isAuthRegisterMode = toRegister;
+            renderApp();
+        }
+
+        function handleRegister(e) {
+            e.preventDefault();
+            if (!isCaptchaVerified) {
+                showToast('Bitte bestätige das reCAPTCHA ("Ich bin kein Roboter")', true);
+                return;
+            }
+
+            const name = document.getElementById('reg-name').value;
+            const handle = document.getElementById('reg-handle').value.replace('@', '');
+            const email = document.getElementById('reg-email').value;
+            const pass1 = document.getElementById('reg-pass1').value;
+            const pass2 = document.getElementById('reg-pass2').value;
+            const avatarFile = document.getElementById('reg-avatar-file').files[0];
+
+            if (pass1 !== pass2) {
+                showToast('Die eingegebenen Passwörter stimmen nicht überein!', true);
+                return;
+            }
+
+            let avatarUrl = '';
+            if (avatarFile) {
+                avatarUrl = URL.createObjectURL(avatarFile);
+            }
+
+            const res = store.registerUser(name, handle, email, pass1, avatarUrl);
+            if (res.success) {
+                showToast(`Willkommen @${handle}! Erfolgreich registriert.`);
+                renderApp();
+            } else {
+                showToast(res.msg, true);
+            }
+        }
+
+        function handleLogin(e) {
+            e.preventDefault();
+            if (!isCaptchaVerified) {
+                showToast('Bitte bestätige das reCAPTCHA ("Ich bin kein Roboter")', true);
+                return;
+            }
+
+            const id = document.getElementById('login-id').value;
+            const pass = document.getElementById('login-pass').value;
+
+            const res = store.loginUser(id, pass);
+            if (res.success) {
+                showToast(`Willkommen zurück, ${store.currentUser.username}!`);
+                renderApp();
+            } else {
+                showToast(res.msg, true);
+            }
+        }
+
+        // NAVIGATION COMPONENT
+        function renderHeader() {
+            return `
+                <header class="h-16 bg-[#0f0f0f] border-b border-zinc-800/80 px-4 flex items-center justify-between shrink-0 z-20">
+                    <div class="flex items-center space-x-4">
+                        <button onclick="toggleMobileSidebar()" class="text-zinc-400 hover:text-white p-2 text-lg sm:hidden">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <div onclick="navigateTo('home')" class="flex items-center space-x-2 cursor-pointer select-none">
+                            <div class="bg-red-600 text-white p-1.5 rounded-lg text-lg font-bold flex items-center justify-center w-9 h-8">
+                                <i class="fas fa-play"></i>
+                            </div>
+                            <span class="text-xl font-extrabold tracking-tight">Eli<span class="text-red-600">Tube</span></span>
+                        </div>
+                    </div>
+
+                    <div class="flex-1 max-w-xl mx-4 hidden sm:block">
+                        <div class="relative flex items-center">
+                            <input type="text" 
+                                id="header-search-input"
+                                value="${store.searchQuery}" 
+                                oninput="handleSearch(this.value)"
+                                placeholder="Suchen (*fett*, **kursiv**)..." 
+                                class="w-full bg-[#121212] border border-zinc-700 focus:border-red-600 text-sm text-white rounded-full pl-4 pr-10 py-2 focus:outline-none transition">
+                            <button class="absolute right-0 top-0 bottom-0 px-4 text-zinc-400 hover:text-white flex items-center">
+                                <i class="fas fa-search"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center space-x-3">
+                        <button onclick="navigateTo('upload')" class="hidden sm:flex items-center space-x-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold px-3 py-2 rounded-full transition">
+                            <i class="fas fa-plus text-red-500"></i>
+                            <span>Erstellen</span>
+                        </button>
+                        <button onclick="showToast('Keine neuen Benachrichtigungen')" class="text-zinc-300 hover:text-white p-2 text-lg relative">
+                            <i class="far fa-bell"></i>
+                            <span class="absolute top-1 right-1 w-2 h-2 bg-red-600 rounded-full"></span>
+                        </button>
+                        <div class="relative group">
+                            <img src="${store.currentUser.avatar}" alt="Avatar" class="w-9 h-9 rounded-full bg-zinc-800 border border-zinc-700 cursor-pointer object-cover">
+                            <div class="absolute right-0 mt-2 w-56 bg-[#1f1f1f] border border-zinc-800 rounded-xl shadow-2xl py-2 hidden group-hover:block z-50">
+                                <div class="px-4 py-2 border-b border-zinc-800">
+                                    <p class="text-sm font-semibold text-white truncate">${store.currentUser.username}</p>
+                                    <p class="text-xs text-zinc-400 truncate">@${store.currentUser.handle}</p>
+                                </div>
+                                <button onclick="navigateTo('profile')" class="w-full text-left px-4 py-2 text-xs text-zinc-200 hover:bg-zinc-800 flex items-center space-x-2 transition">
+                                    <i class="fas fa-user-gear text-red-500"></i>
+                                    <span>Profil anpassen</span>
+                                </button>
+                                <button onclick="store.logout()" class="w-full text-left px-4 py-2 text-xs text-red-400 hover:bg-zinc-800 flex items-center space-x-2 transition">
+                                    <i class="fas fa-sign-out-alt"></i>
+                                    <span>Abmelden</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        function renderSidebar() {
+            const activeTab = store.currentTab;
+
+            const navItem = (id, label, icon, isSpecial = false) => {
+                const isActive = activeTab === id;
+                return `
+                    <button onclick="navigateTo('${id}')" class="w-full flex items-center space-x-4 px-4 py-3 rounded-xl text-sm font-medium transition ${isActive ? 'bg-zinc-800 text-white font-semibold' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'}">
+                        <i class="${icon} text-lg w-6 ${isActive ? (isSpecial ? 'text-red-500' : 'text-white') : ''}"></i>
+                        <span>${label}</span>
+                    </button>
+                `;
+            };
+
+            return `
+                <aside id="app-sidebar" class="w-64 bg-[#0f0f0f] border-r border-zinc-800/80 p-3 shrink-0 hidden sm:flex flex-col justify-between h-full">
+                    <div class="space-y-1">
+                        ${navItem('home', 'Startseite (index.html)', 'fas fa-home')}
+                        ${navItem('clipz', 'EliClipz (clipz.html)', 'fas fa-bolt', true)}
+                        
+                        <div class="my-3 border-t border-zinc-800"></div>
+
+                        ${navItem('abos', 'Abos (abo.html)', 'fas fa-layer-group')}
+                        ${navItem('upload', 'Hochladen (plus.html)', 'fas fa-plus-circle')}
+                    </div>
+
+                    <div class="border-t border-zinc-800 pt-3">
+                        <p class="px-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-2">Abonnements</p>
+                        <div class="space-y-1 max-h-48 overflow-y-auto">
+                            ${store.interactions.subscriptions.length === 0 ? '<p class="px-4 text-xs text-zinc-600">Keine Abos vorhanden</p>' : ''}
+                            ${store.interactions.subscriptions.map(handle => {
+                                const authorVid = store.videos.find(v => v.authorHandle === handle);
+                                const name = authorVid ? authorVid.author : handle;
+                                const avatar = authorVid ? authorVid.authorAvatar : `https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`;
+                                return `
+                                    <div class="flex items-center space-x-3 px-4 py-2 hover:bg-zinc-800/40 rounded-xl cursor-pointer text-xs text-zinc-300">
+                                        <img src="${avatar}" class="w-5 h-5 rounded-full bg-zinc-800">
+                                        <span class="truncate">${name}</span>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                </aside>
+            `;
+        }
+
+        // ATTACH PLAYER EVENTS FOR CUSTOM VIDEO CONTROLS
+        function attachCustomPlayerEvents(videoId) {
+            setTimeout(() => {
+                const playerContainer = document.getElementById('custom-player-container');
+                const video = document.getElementById('custom-video-el');
+                if (!video || !playerContainer) return;
+
+                const playBtn = document.getElementById('btn-play-pause');
+                const playIcon = document.getElementById('icon-play-pause');
+                const volumeSlider = document.getElementById('volume-slider');
+                const timeStamp = document.getElementById('timestamp-display');
+                const progressBar = document.getElementById('progress-bar');
+                const progressFilled = document.getElementById('progress-filled');
+                const fullscreenBtn = document.getElementById('btn-fullscreen');
+
+                playerContainer.addEventListener('contextmenu', e => e.preventDefault());
+
+                function togglePlay() {
+                    if (video.paused) {
+                        video.play();
+                        if (playIcon) playIcon.className = 'fas fa-pause text-white';
+                    } else {
+                        video.pause();
+                        if (playIcon) playIcon.className = 'fas fa-play text-white';
+                    }
+                }
+
+                if (playBtn) playBtn.onclick = togglePlay;
+                video.onclick = togglePlay;
+
+                if (fullscreenBtn) {
+                    fullscreenBtn.onclick = () => {
+                        if (!document.fullscreenElement) {
+                            if (playerContainer.requestFullscreen) {
+                                playerContainer.requestFullscreen();
+                            } else if (playerContainer.webkitRequestFullscreen) {
+                                playerContainer.webkitRequestFullscreen();
+                            }
+                        } else {
+                            if (document.exitFullscreen) {
+                                document.exitFullscreen();
+                            }
+                        }
+                    };
+                }
+
+                if (volumeSlider) {
+                    volumeSlider.oninput = (e) => {
+                        video.volume = e.target.value;
+                    };
+                }
+
+                video.ontimeupdate = () => {
+                    const current = formatTime(video.currentTime);
+                    const duration = formatTime(video.duration || 0);
+                    if (timeStamp) timeStamp.textContent = `${current} / ${duration}`;
+                    
+                    if (progressBar && video.duration) {
+                        const pct = (video.currentTime / video.duration) * 100;
+                        if (progressFilled) progressFilled.style.width = `${pct}%`;
+                    }
+                };
+
+                if (progressBar) {
+                    progressBar.onclick = (e) => {
+                        const rect = progressBar.getBoundingClientRect();
+                        const pos = (e.clientX - rect.left) / rect.width;
+                        video.currentTime = pos * video.duration;
+                    };
+                }
+            }, 50);
+        }
+
+        // VIEW: HOME & WATCH
+        function renderHomeView() {
+            const filteredVideos = store.videos.filter(v => 
+                !v.isShort && 
+                (v.title.toLowerCase().includes(store.searchQuery.toLowerCase()) || 
+                 v.author.toLowerCase().includes(store.searchQuery.toLowerCase()))
+            );
+
+            if (store.currentTab === 'watch' && store.activeVideoId) {
+                const video = store.videos.find(v => v.id === store.activeVideoId);
+                if (!video) return `<div class="p-8 text-center text-zinc-400">Video nicht gefunden.</div>`;
+
+                const isLiked = store.interactions.likedVideos.includes(video.id);
+                const isDisliked = store.interactions.dislikedVideos.includes(video.id);
+                const isSubbed = store.interactions.subscriptions.includes(video.authorHandle);
+                const bellState = store.interactions.bells[video.authorHandle] || 'all';
+                const bellIcon = bellState === 'all' ? 'fas fa-bell' : (bellState === 'personalized' ? 'fas fa-bell-slash' : 'far fa-bell');
+
+                attachCustomPlayerEvents(video.id);
+
+                return `
+                    <div class="flex-1 overflow-y-auto p-4 lg:p-6">
+                        <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div class="lg:col-span-2 space-y-4">
+                                <div id="custom-player-container" class="w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 relative group select-none flex flex-col justify-between">
+                                    <video id="custom-video-el" src="${video.url}" controlsList="nodownload" autoplay class="w-full h-full object-contain cursor-pointer absolute inset-0"></video>
+
+                                    <div class="absolute top-0 inset-x-0 p-4 player-gradient-overlay z-10 pointer-events-none">
+                                        <h2 class="text-white font-semibold text-sm sm:text-base drop-shadow-md truncate">
+                                            ${parseMarkdown(video.title)}
+                                        </h2>
+                                    </div>
+
+                                    <div class="absolute bottom-0 inset-x-0 z-20 flex flex-col bg-black/90 pt-2 pb-3 px-4 space-y-2">
+                                        <div id="progress-bar" class="w-full h-2 bg-zinc-800 rounded-full cursor-pointer relative overflow-hidden">
+                                            <div id="progress-filled" class="h-full progress-gradient-bar w-0 relative flex items-center justify-end">
+                                                <div class="w-3 h-3 bg-white rounded-full shadow-md translate-x-1/2"></div>
+                                            </div>
+                                        </div>
+
+                                        <div class="flex items-center justify-between text-white pt-1">
+                                            <div class="flex items-center space-x-4">
+                                                <button id="btn-play-pause" class="hover:text-red-500 transition">
+                                                    <i id="icon-play-pause" class="fas fa-pause text-base"></i>
+                                                </button>
+                                                <div class="flex items-center space-x-2">
+                                                    <i class="fas fa-volume-up text-xs text-white"></i>
+                                                    <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" class="w-16 sm:w-24 accent-white h-1 cursor-pointer">
+                                                </div>
+                                                <span id="timestamp-display" class="text-xs font-mono font-medium tracking-wider text-white">0:00 / 0:00</span>
+                                            </div>
+                                            <div class="flex items-center space-x-3 text-xs">
+                                                <span class="bg-blue-950/80 text-blue-400 font-bold px-2 py-0.5 rounded border border-blue-800 text-[10px]">HD</span>
+                                                <button id="btn-fullscreen" class="hover:text-red-500 transition p-1">
+                                                    <i class="fas fa-expand text-sm"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <h1 class="text-xl sm:text-2xl font-bold text-white leading-tight">
+                                    ${parseMarkdown(video.title)}
+                                </h1>
+
+                                <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-zinc-800">
+                                    <div class="flex items-center space-x-3">
+                                        <img src="${video.authorAvatar}" class="w-11 h-11 rounded-full bg-zinc-800 border border-zinc-700">
+                                        <div>
+                                            <p class="font-bold text-white text-sm">${video.author}</p>
+                                            <p class="text-xs text-zinc-400">@${video.authorHandle}</p>
+                                        </div>
+                                        <div class="flex items-center space-x-1 ml-4">
+                                            <button onclick="store.toggleSub('${video.authorHandle}')" class="px-4 py-2 rounded-full text-xs font-bold transition ${isSubbed ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-white hover:bg-zinc-200 text-black'}">
+                                                ${isSubbed ? 'Abonniert' : 'Abonnieren'}
+                                            </button>
+                                            ${isSubbed ? `
+                                                <button onclick="store.cycleBell('${video.authorHandle}')" class="p-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition">
+                                                    <i class="${bellIcon}"></i>
+                                                </button>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-center space-x-2">
+                                        <div class="flex items-center bg-zinc-800 rounded-full border border-zinc-700/60 overflow-hidden">
+                                            <button onclick="store.toggleLike('${video.id}')" class="flex items-center space-x-2 px-4 py-2 hover:bg-zinc-700/60 text-xs font-semibold transition ${isLiked ? 'text-red-500' : 'text-zinc-300'}">
+                                                <i class="fas fa-thumbs-up text-sm"></i>
+                                                <span>${video.likes}</span>
+                                            </button>
+                                            <div class="w-px h-4 bg-zinc-700"></div>
+                                            <button onclick="store.toggleDislike('${video.id}')" class="px-4 py-2 hover:bg-zinc-700/60 text-xs font-semibold transition ${isDisliked ? 'text-red-500' : 'text-zinc-300'}">
+                                                <i class="fas fa-thumbs-down text-sm"></i>
+                                            </button>
+                                        </div>
+                                        <button onclick="copyShareLink('${video.id}')" class="flex items-center space-x-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold px-4 py-2 rounded-full border border-zinc-700/60 transition">
+                                            <i class="fas fa-share"></i>
+                                            <span>Teilen</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="bg-[#1f1f1f] border border-zinc-800 p-4 rounded-2xl text-xs text-zinc-300 space-y-2">
+                                    <div class="flex space-x-4 font-semibold text-white">
+                                        <span>${video.views.toLocaleString()} Aufrufe</span>
+                                        <span>${video.createdAt}</span>
+                                    </div>
+                                    <p class="whitespace-pre-line leading-relaxed text-zinc-300">${parseMarkdown(video.description)}</p>
+                                </div>
+
+                                <div class="pt-4 space-y-4">
+                                    <h3 class="text-lg font-bold text-white">${video.comments.length} Kommentare</h3>
+                                    <div class="flex space-x-3">
+                                        <img src="${store.currentUser.avatar}" class="w-9 h-9 rounded-full bg-zinc-800">
+                                        <div class="flex-1 space-y-2">
+                                            <input type="text" id="comment-input-${video.id}" placeholder="Einen Kommentar schreiben (*kursiv*, **fett**)..." class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2 text-sm text-white focus:outline-none focus:border-red-600">
+                                            <div class="flex justify-end space-x-2">
+                                                <button onclick="document.getElementById('comment-input-${video.id}').value = ''" class="px-3 py-1.5 text-xs text-zinc-400 hover:text-white">Abbrechen</button>
+                                                <button onclick="store.addComment('${video.id}', document.getElementById('comment-input-${video.id}').value)" class="bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-4 py-1.5 rounded-lg transition">Kommentieren</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="space-y-3 pt-2">
+                                        ${video.comments.map(c => `
+                                            <div class="flex space-x-3 text-xs bg-[#121212] p-3 rounded-xl border border-zinc-800/40">
+                                                <img src="https://api.dicebear.com/7.x/bottts/svg?seed=${c.handle}" class="w-8 h-8 rounded-full bg-zinc-800">
+                                                <div>
+                                                    <div class="flex items-center space-x-2">
+                                                        <span class="font-bold text-white">${c.author}</span>
+                                                        <span class="text-zinc-500">@${c.handle}</span>
+                                                        <span class="text-zinc-500">• ${c.date}</span>
+                                                    </div>
+                                                    <p class="text-zinc-300 mt-1">${parseMarkdown(c.text)}</p>
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="space-y-4">
+                                <h3 class="font-bold text-white text-sm">Nächste Videos</h3>
+                                <div class="space-y-3">
+                                    ${store.videos.filter(v => !v.isShort && v.id !== video.id).map(v => `
+                                        <div onclick="navigateTo('watch', '${v.id}')" class="flex space-x-3 cursor-pointer group">
+                                            <div class="w-36 aspect-video bg-zinc-800 rounded-xl overflow-hidden shrink-0 relative">
+                                                <img src="${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                                <h4 class="text-xs font-bold text-white line-clamp-2 group-hover:text-red-500 transition">${parseMarkdown(v.title)}</h4>
+                                                <p class="text-[11px] text-zinc-400 mt-1">${v.author}</p>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6">
+                    <div class="max-w-7xl mx-auto">
+                        ${filteredVideos.length === 0 ? `
+                            <div class="text-center py-20 space-y-4">
+                                <div class="w-20 h-20 bg-zinc-800/80 rounded-full flex items-center justify-center mx-auto text-zinc-500 text-3xl">
+                                    <i class="fas fa-video-slash"></i>
+                                </div>
+                                <h3 class="text-lg font-bold text-white">Noch keine Videos vorhanden</h3>
+                                <p class="text-xs text-zinc-400 max-w-sm mx-auto">Lade dein erstes Video hoch! Es wird automatisch unter <code>/EliVideos/001.mp4</code> indiziert.</p>
+                                <button onclick="navigateTo('upload')" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-red-600/30 transition">
+                                    <i class="fas fa-plus mr-2"></i> Video hochladen (plus.html)
+                                </button>
+                            </div>
+                        ` : `
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                ${filteredVideos.map(v => `
+                                    <div onclick="navigateTo('watch', '${v.id}')" class="flex flex-col space-y-3 cursor-pointer group">
+                                        <div class="w-full aspect-video bg-zinc-800 rounded-2xl overflow-hidden relative shadow-md">
+                                            <img src="${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+                                            <div class="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                                                <div class="w-12 h-12 bg-red-600 rounded-full flex items-center justify-center text-white shadow-lg">
+                                                    <i class="fas fa-play ml-1"></i>
+                                                </div>
+                                            </div>
+                                            <span class="absolute bottom-2 right-2 bg-black/80 text-zinc-300 text-[10px] font-mono px-1.5 py-0.5 rounded">#${v.id}</span>
+                                        </div>
+                                        <div class="flex space-x-3">
+                                            <img src="${v.authorAvatar}" class="w-9 h-9 rounded-full bg-zinc-800 border border-zinc-700 shrink-0">
+                                            <div class="min-w-0 flex-1">
+                                                <h3 class="text-sm font-bold text-white leading-snug line-clamp-2 group-hover:text-red-500 transition">${parseMarkdown(v.title)}</h3>
+                                                <p class="text-xs text-zinc-400 mt-1">${v.author}</p>
+                                                <div class="flex items-center space-x-1 text-[11px] text-zinc-500 mt-0.5">
+                                                    <span>${v.views.toLocaleString()} Aufrufe</span>
+                                                    <span>•</span>
+                                                    <span>${v.createdAt}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+        }
+
+        // VIEW: ELICLIPZ
+        function renderClipzView() {
+            const clips = store.videos.filter(v => v.isShort);
+            return `
+                <div class="flex-1 overflow-y-auto no-scrollbar reel-container h-full w-full flex flex-col items-center py-4">
+                    ${clips.length === 0 ? `
+                        <div class="text-center my-auto space-y-4">
+                            <i class="fas fa-bolt text-4xl text-zinc-600"></i>
+                            <p class="text-zinc-400 text-sm">Keine EliClipz vorhanden. Lade deinen ersten Clip hoch!</p>
+                            <button onclick="navigateTo('upload')" class="bg-red-600 text-white text-xs font-bold px-4 py-2 rounded-xl">Clip erstellen</button>
+                        </div>
+                    ` : ''}
+                    ${clips.map((clip) => {
+                        const isLiked = store.interactions.likedVideos.includes(clip.id);
+                        const isSubbed = store.interactions.subscriptions.includes(clip.authorHandle);
+
+                        return `
+                            <div class="reel-item w-full max-w-sm h-[calc(100vh-6rem)] shrink-0 flex items-center justify-center p-2">
+                                <div class="relative w-full h-full bg-black rounded-3xl overflow-hidden border border-zinc-800 shadow-2xl flex items-center justify-center">
+                                    <video src="${clip.url}" loop autoplay muted controlsList="nodownload" class="w-full h-full object-cover"></video>
+
+                                    <div class="absolute bottom-0 inset-x-0 player-gradient-overlay p-5 space-y-3">
+                                        <div class="flex items-center space-x-3">
+                                            <img src="${clip.authorAvatar}" class="w-10 h-10 rounded-full border border-zinc-700">
+                                            <div>
+                                                <p class="text-xs font-bold text-white">${clip.author}</p>
+                                                <p class="text-[10px] text-zinc-200">@${clip.authorHandle}</p>
+                                            </div>
+                                            <button onclick="store.toggleSub('${clip.authorHandle}')" class="ml-auto px-3 py-1 rounded-full text-xs font-bold ${isSubbed ? 'bg-zinc-800 text-zinc-300' : 'bg-white text-black'}">
+                                                ${isSubbed ? 'Abonniert' : 'Abo'}
+                                            </button>
+                                        </div>
+                                        <p class="text-xs text-white line-clamp-2">${parseMarkdown(clip.title)}</p>
+                                    </div>
+
+                                    <div class="absolute right-3 bottom-24 flex flex-col items-center space-y-4 z-10">
+                                        <button onclick="store.toggleLike('${clip.id}')" class="flex flex-col items-center">
+                                            <div class="w-11 h-11 bg-zinc-900/80 backdrop-blur rounded-full flex items-center justify-center border border-zinc-700/50 ${isLiked ? 'text-red-500' : 'text-white'}">
+                                                <i class="fas fa-heart text-lg"></i>
+                                            </div>
+                                            <span class="text-[10px] text-white font-bold mt-1">${clip.likes}</span>
+                                        </button>
+                                        <button onclick="navigateTo('watch', '${clip.id}')" class="flex flex-col items-center">
+                                            <div class="w-11 h-11 bg-zinc-900/80 backdrop-blur rounded-full flex items-center justify-center border border-zinc-700/50 text-white">
+                                                <i class="fas fa-comment text-lg"></i>
+                                            </div>
+                                            <span class="text-[10px] text-white font-bold mt-1">${clip.comments.length}</span>
+                                        </button>
+                                        <button onclick="copyShareLink('${clip.id}')" class="flex flex-col items-center">
+                                            <div class="w-11 h-11 bg-zinc-900/80 backdrop-blur rounded-full flex items-center justify-center border border-zinc-700/50 text-white">
+                                                <i class="fas fa-share text-lg"></i>
+                                            </div>
+                                            <span class="text-[10px] text-white font-bold mt-1">Teilen</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        // VIEW: ABOS
+        function renderAbosView() {
+            const subHandles = store.interactions.subscriptions;
+            const subbedVideos = store.videos.filter(v => subHandles.includes(v.authorHandle));
+
+            return `
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6">
+                    <div class="max-w-7xl mx-auto space-y-6">
+                        <div class="flex items-center justify-between border-b border-zinc-800 pb-4">
+                            <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+                                <i class="fas fa-layer-group text-red-600"></i>
+                                <span>Abonnierte Kanäle & Videos</span>
+                            </h2>
+                            <span class="text-xs text-zinc-400">${subHandles.length} Abonnements</span>
+                        </div>
+
+                        ${subbedVideos.length === 0 ? `
+                            <div class="text-center py-16 space-y-4">
+                                <i class="fas fa-bell-slash text-4xl text-zinc-600"></i>
+                                <p class="text-zinc-400 text-sm">Du hast noch keine Kanäle abonniert.</p>
+                            </div>
+                        ` : `
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                ${subbedVideos.map(v => `
+                                    <div onclick="navigateTo('watch', '${v.id}')" class="flex flex-col space-y-3 cursor-pointer group">
+                                        <div class="w-full aspect-video bg-zinc-800 rounded-2xl overflow-hidden relative shadow-md">
+                                            <img src="${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+                                        </div>
+                                        <div class="flex space-x-3">
+                                            <img src="${v.authorAvatar}" class="w-9 h-9 rounded-full bg-zinc-800">
+                                            <div>
+                                                <h3 class="text-sm font-bold text-white line-clamp-2">${parseMarkdown(v.title)}</h3>
+                                                <p class="text-xs text-zinc-400 mt-1">${v.author}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+        }
+
+        // VIEW: UPLOAD (plus.html)
+        function renderUploadView() {
+            return `
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6">
+                    <div class="max-w-2xl mx-auto bg-[#1f1f1f] border border-zinc-800 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
+                        <div class="flex items-center space-x-3 border-b border-zinc-800 pb-4">
+                            <div class="w-10 h-10 bg-red-600/20 text-red-500 rounded-xl flex items-center justify-center text-xl font-bold">
+                                <i class="fas fa-upload"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-xl font-bold text-white">Neues Video hochladen</h2>
+                                <p class="text-xs text-zinc-400">Dateien werden unter <code>/EliVideos/</code> strukturiert abgelegt.</p>
+                            </div>
+                        </div>
+
+                        <form onsubmit="handleUploadSubmit(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-zinc-400 mb-1">Titel (*kursiv*, **fett**)</label>
+                                <input type="text" id="upload-title" required placeholder="z.B. **Mein neues Video**" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600">
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-zinc-400 mb-1">Beschreibung (*kursiv*, **fett**)</label>
+                                <textarea id="upload-desc" rows="3" placeholder="Schreibe etwas zum Video..." class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600"></textarea>
+                            </div>
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Video-Datei (mp4, mkv, webm, mov)</label>
+                                    <input type="file" id="upload-video-file" accept="video/mp4,video/mkv,video/webm,video/quicktime" required class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-xs file:bg-zinc-800 file:text-white cursor-pointer">
+                                </div>
+
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Thumbnail-Datei (Bild)</label>
+                                    <input type="file" id="upload-thumb-file" accept="image/*" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-xs file:bg-zinc-800 file:text-white cursor-pointer">
+                                </div>
+                            </div>
+
+                            <div class="bg-[#0f0f0f] border border-zinc-800 rounded-xl p-3 flex items-center justify-between">
+                                <label class="flex items-center space-x-3 cursor-pointer">
+                                    <input type="checkbox" id="upload-isshort" class="w-4 h-4 rounded border-zinc-700 bg-zinc-900 text-red-600">
+                                    <span class="text-xs text-zinc-300 font-medium">Als EliClipz (Short / Vertikal) veröffentlichen</span>
+                                </label>
+                                <i class="fas fa-bolt text-yellow-500"></i>
+                            </div>
+
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-zinc-800">
+                                <button type="button" onclick="navigateTo('home')" class="px-5 py-2.5 text-xs text-zinc-400 hover:text-white font-semibold">Abbrechen</button>
+                                <button type="submit" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-6 py-2.5 rounded-xl shadow-lg shadow-red-600/30 transition">
+                                    Veröffentlichen
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function handleUploadSubmit(e) {
+            e.preventDefault();
+            const title = document.getElementById('upload-title').value;
+            const desc = document.getElementById('upload-desc').value;
+            const isShort = document.getElementById('upload-isshort').checked;
+
+            const videoFile = document.getElementById('upload-video-file').files[0];
+            const thumbFile = document.getElementById('upload-thumb-file').files[0];
+
+            if (!videoFile) {
+                showToast('Bitte wähle eine Video-Datei aus!', true);
+                return;
+            }
+
+            const videoUrl = URL.createObjectURL(videoFile);
+            let thumbUrl = '';
+            if (thumbFile) {
+                thumbUrl = URL.createObjectURL(thumbFile);
+            }
+
+            store.addVideo({
+                title: title,
+                description: desc,
+                url: videoUrl,
+                thumbnail: thumbUrl,
+                isShort: isShort
+            });
+        }
+
+        // VIEW: PROFILE CUSTOMIZATION
+        function renderProfileCustomizationView() {
+            const user = store.currentUser;
+            return `
+                <div class="flex-1 overflow-y-auto p-4 sm:p-6">
+                    <div class="max-w-2xl mx-auto bg-[#1f1f1f] border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+                        <div class="w-full aspect-[5/1] bg-gradient-to-r from-red-900 via-purple-900 to-blue-900 relative group overflow-hidden">
+                            ${user.banner ? `<img id="banner-preview" src="${user.banner}" class="w-full h-full object-cover">` : `<img id="banner-preview" class="w-full h-full object-cover hidden">`}
+                            <div class="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                                <span class="text-xs font-bold text-white bg-black/60 px-3 py-1.5 rounded-full">Banner Format 5:1</span>
+                            </div>
+                        </div>
+
+                        <form onsubmit="handleProfileUpdateSubmit(event)" class="p-6 sm:p-8 space-y-6">
+                            <div class="flex items-center space-x-4 border-b border-zinc-800 pb-6">
+                                <div class="w-20 h-20 aspect-square rounded-full bg-zinc-800 border-2 border-red-600 overflow-hidden shrink-0 relative group">
+                                    <img id="avatar-preview" src="${user.avatar}" class="w-full h-full object-cover">
+                                </div>
+                                <div>
+                                    <h2 class="text-xl font-bold text-white">Kanal anpassen</h2>
+                                    <p class="text-xs text-zinc-400">Profil wird in <code>/profile/${user.handle}.txt</code> indiziert.</p>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Banner ändern (Pflicht: 5:1)</label>
+                                    <input type="file" id="prof-banner-file" accept="image/*" onchange="previewImage(this, 'banner-preview')" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-xs file:bg-zinc-800 file:text-white cursor-pointer">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-zinc-400 mb-1">Profilbild ändern (Pflicht: 1:1)</label>
+                                    <input type="file" id="prof-avatar-file" accept="image/*" onchange="previewImage(this, 'avatar-preview')" class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-300 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-xs file:bg-zinc-800 file:text-white cursor-pointer">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-zinc-400 mb-1">Benutzername</label>
+                                <input type="text" id="prof-username" value="${user.username}" required class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600">
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-zinc-400 mb-1">@Name (Eindeutig)</label>
+                                <div class="relative">
+                                    <span class="absolute left-4 top-2.5 text-zinc-500 text-sm">@</span>
+                                    <input type="text" id="prof-handle" value="${user.handle}" required class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl pl-8 pr-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-zinc-400 mb-1">Kanalbeschreibung</label>
+                                <textarea id="prof-bio" rows="3" placeholder="Beschreibe deinen Kanal..." class="w-full bg-[#0f0f0f] border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-red-600">${user.bio || ''}</textarea>
+                            </div>
+
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-zinc-800">
+                                <button type="button" onclick="navigateTo('home')" class="px-5 py-2.5 text-xs text-zinc-400 hover:text-white font-semibold">Abbrechen</button>
+                                <button type="submit" class="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-6 py-2.5 rounded-xl shadow-lg shadow-red-600/30 transition">
+                                    Änderungen speichern
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function previewImage(input, targetId) {
+            if (input.files && input.files[0]) {
+                const url = URL.createObjectURL(input.files[0]);
+                const img = document.getElementById(targetId);
+                if (img) {
+                    img.src = url;
+                    img.classList.remove('hidden');
+                }
+            }
+        }
+
+        function handleProfileUpdateSubmit(e) {
+            e.preventDefault();
+            const username = document.getElementById('prof-username').value;
+            const handle = document.getElementById('prof-handle').value.replace('@', '');
+            const bio = document.getElementById('prof-bio').value;
+            const bannerFile = document.getElementById('prof-banner-file').files[0];
+            const avatarFile = document.getElementById('prof-avatar-file').files[0];
+
+            let bannerUrl = store.currentUser.banner;
+            if (bannerFile) bannerUrl = URL.createObjectURL(bannerFile);
+
+            let avatarUrl = store.currentUser.avatar;
+            if (avatarFile) avatarUrl = URL.createObjectURL(avatarFile);
+
+            const res = store.updateProfile({
+                username,
+                handle,
+                bio,
+                banner: bannerUrl,
+                avatar: avatarUrl
+            });
+
+            if (res.success) {
+                showToast('Profil erfolgreich aktualisiert & indiziert! ✨');
+                renderApp();
+            } else {
+                showToast(res.msg, true);
+            }
+        }
+
+        // MOBILE SIDEBAR TOGGLE
+        let isMobileSidebarOpen = false;
+        function toggleMobileSidebar() {
+            isMobileSidebarOpen = !isMobileSidebarOpen;
+            const sidebar = document.getElementById('app-sidebar');
+            if (sidebar) {
+                if (isMobileSidebarOpen) {
+                    sidebar.classList.remove('hidden');
+                    sidebar.classList.add('flex', 'absolute', 'left-0', 'top-16', 'bottom-0', 'z-40', 'w-64', 'shadow-2xl');
+                } else {
+                    sidebar.classList.add('hidden');
+                    sidebar.classList.remove('flex', 'absolute', 'left-0', 'top-16', 'bottom-0', 'z-40', 'w-64', 'shadow-2xl');
+                }
+            }
+        }
+
+        // MAIN APPLICATION RENDER ROUTINER
+        function renderApp() {
+            const appEl = document.getElementById('app');
+
+            if (!store.currentUser) {
+                appEl.innerHTML = renderAuthView(isAuthRegisterMode);
+                return;
+            }
+
+            let mainContent = '';
+            switch (store.currentTab) {
+                case 'clipz':
+                    mainContent = renderClipzView();
+                    break;
+                case 'abos':
+                    mainContent = renderAbosView();
+                    break;
+                case 'upload':
+                    mainContent = renderUploadView();
+                    break;
+                case 'profile':
+                    mainContent = renderProfileCustomizationView();
+                    break;
+                case 'home':
+                case 'watch':
+                default:
+                    mainContent = renderHomeView();
+                    break;
+            }
+
+            appEl.innerHTML = `
+                ${renderHeader()}
+                <div class="flex-1 flex overflow-hidden relative">
+                    ${renderSidebar()}
+                    ${mainContent}
+                </div>
+            `;
+        }
+
+        window.onload = function() {
+            renderApp();
+        };
+    </script>
+</body>
+</html>
